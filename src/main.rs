@@ -1,7 +1,10 @@
 use anyhow::Result;
-use druid::widget::{
-    Button,
-    Flex, //, Label
+use druid::{
+    widget::{
+        Button,
+        Flex, //, Label
+    },
+    Event,
 };
 use druid::{
     AppLauncher,
@@ -12,11 +15,88 @@ use druid::{
     WindowDesc,
 };
 use rodio::OutputStreamHandle;
-use std::io::BufReader;
 use std::{fs::File, sync::Arc};
+use std::{io::BufReader, time::Duration};
 
 const HOSTNAME: &str = "http://localhost:81/";
 const LOCAL_FILENAME: &str = "song.mp3";
+const TIMER_INTERVAL: Duration = Duration::from_millis(100);
+
+struct TimerWidget {
+    timer_id: druid::TimerToken,
+}
+
+impl Widget<DruidState> for TimerWidget {
+    fn event(
+        &mut self,
+        ctx: &mut druid::EventCtx,
+        event: &druid::Event,
+        data: &mut DruidState,
+        _env: &druid::Env,
+    ) {
+        match event {
+            Event::WindowConnected => {
+                // Start the timer when the application launches
+                self.timer_id = ctx.request_timer(TIMER_INTERVAL);
+                // Start first Song
+                dl_play(&mut data.sink, &data.handle).unwrap();
+            }
+            Event::Timer(id) => {
+                if *id == self.timer_id {
+                    self.timer_id = ctx.request_timer(TIMER_INTERVAL);
+                    timer_tick(ctx, data);
+                }
+            }
+            _ => (),
+        }
+    }
+
+    fn lifecycle(
+        &mut self,
+        _ctx: &mut druid::LifeCycleCtx,
+        _event: &druid::LifeCycle,
+        _data: &DruidState,
+        _env: &druid::Env,
+    ) {
+        //todo!()
+    }
+
+    fn update(
+        &mut self,
+        _ctx: &mut druid::UpdateCtx,
+        _old_data: &DruidState,
+        _data: &DruidState,
+        _env: &druid::Env,
+    ) {
+        //todo!()
+    }
+
+    fn layout(
+        &mut self,
+        _ctx: &mut druid::LayoutCtx,
+        bc: &druid::BoxConstraints,
+        _data: &DruidState,
+        _env: &druid::Env,
+    ) -> druid::Size {
+        //todo!()
+        bc.constrain((0.0, 0.0))
+    }
+
+    fn paint(&mut self, _ctx: &mut druid::PaintCtx, _data: &DruidState, _env: &druid::Env) {
+        //todo!()
+    }
+}
+
+fn timer_tick(_ctx: &mut druid::EventCtx, data: &mut DruidState) {
+    println!("tick :)");
+
+    if let Some(sink) = data.sink.as_ref() {
+        if sink.empty() {
+            println!("NEUES LIED!");
+            dl_play(&mut data.sink, &data.handle).unwrap();
+        }
+    }
+}
 
 //fn main() -> iced::Result {
 // fn oldmain() -> Result<()> {
@@ -39,7 +119,7 @@ struct DruidState {
 }
 
 fn main() -> Result<()> {
-    let main_window = WindowDesc::new(ui_builder);
+    let main_window = WindowDesc::new(ui_builder).window_size((100f64, 50f64));
 
     let (stream, handle) = rodio::OutputStream::try_default()?;
 
@@ -60,7 +140,7 @@ fn main() -> Result<()> {
 
 fn ui_builder() -> impl Widget<DruidState> {
     // The label text will be computed dynamically based on the current locale and count
-    //let text =
+    // let text =
     //    LocalizedString::new("hello-counter").with_arg("count", |data: DruidState, _env| data);
     //let label = Label::new(text).padding(5.0).center();
     let button = Button::new("play/skip")
@@ -80,10 +160,15 @@ fn ui_builder() -> impl Widget<DruidState> {
         })
         .padding(5.0);
 
+    let timer1 = TimerWidget {
+        timer_id: druid::TimerToken::INVALID,
+    };
+
     Flex::column()
         //.with_child(label)
         .with_child(button)
         .with_child(button2)
+        .with_child(timer1)
 }
 
 fn dl_play(sink: &mut Option<Arc<rodio::Sink>>, handle: &OutputStreamHandle) -> Result<()> {
