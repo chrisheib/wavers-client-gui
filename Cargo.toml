@@ -9,7 +9,8 @@ edition = "2018"
 [dependencies]
 rodio = "0.13" # audio player
 #chrono = "0.4"
-iced = {version = "0.2", features = ["canvas", "tokio"]} # gui
+#iced = {version = "0.2", features = ["canvas", "tokio"]} # gui
+druid = "0.7"
 reqwest = {version = "0.11", features = ["blocking"]} # download
 anyhow = "1"
 #futures = "0.3" # async
