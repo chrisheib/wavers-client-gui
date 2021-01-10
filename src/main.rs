@@ -10,7 +10,7 @@ use std::{io::BufReader, time::Duration};
 const HOSTNAME: &str = "http://localhost:81/";
 const LOCAL_FILENAME: &str = "song.mp3";
 const TIMER_INTERVAL: Duration = Duration::from_millis(100);
-const DEFAULT_VOLUME: f64 = 0.3f64;
+const DEFAULT_VOLUME: f64 = 0.45f64;
 
 struct TimerWidget {
     timer_id: druid::TimerToken,
@@ -90,6 +90,8 @@ struct DruidState {
     handle: Arc<rodio::OutputStreamHandle>,
     sink: Option<Arc<rodio::Sink>>,
     volume: f64,
+    songname: String,
+    id: u32,
 }
 
 fn main() -> Result<()> {
@@ -101,6 +103,8 @@ fn main() -> Result<()> {
         handle: Arc::new(handle),
         sink: None,
         volume: DEFAULT_VOLUME,
+        songname: "None".to_string(),
+        id: 0,
     };
 
     AppLauncher::with_window(main_window)
@@ -133,6 +137,13 @@ fn ui_builder() -> impl Widget<DruidState> {
         timer_id: druid::TimerToken::INVALID,
     };
 
+    let songnamelabel: druid::widget::Align<DruidState> =
+        druid::widget::Label::new(|data: &DruidState, _env: &_| {
+            format!("Playing: {}", data.songname)
+        })
+        .padding(5.0)
+        .center();
+
     let volumelabel: druid::widget::Align<DruidState> =
         druid::widget::Label::new(|data: &DruidState, _env: &_| {
             format!("Volume: {:.2}", data.volume)
@@ -145,22 +156,38 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_child(button)
         .with_child(button2)
         .with_child(timer1)
+        .with_child(songnamelabel)
         .with_child(volumelabel)
         .with_child(volumeslider)
 }
 
 fn dl_play(data: &mut DruidState) -> Result<()> {
-    dl()?;
+    dl(data)?;
+    set_songtitle(data)?;
     play(data)?;
     Ok(())
 }
 
-fn dl() -> Result<()> {
+fn set_songtitle(data: &mut DruidState) -> Result<()> {
+    let songdata =
+        reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songdata/", data.id))?.text()?;
+    let songdata = json::parse(&songdata)?;
+    let title = songdata["songname"].to_string();
+    data.songname = if !title.is_empty() {
+        title
+    } else {
+        songdata["filename"].to_string()
+    };
+    Ok(())
+}
+
+fn dl(data: &mut DruidState) -> Result<()> {
     std::fs::remove_file(LOCAL_FILENAME).unwrap_or(());
     let id = reqwest::blocking::get(&format!("{}{}", HOSTNAME, "random_id"))?.text()?;
     let response = reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songs/", id))?.bytes()?;
     let mut file = File::create(LOCAL_FILENAME)?;
     std::io::copy(&mut response.as_ref(), &mut file)?;
+    data.id = id.parse()?;
     Ok(())
 }
 
@@ -189,6 +216,6 @@ fn play(data: &mut DruidState) -> Result<()> {
 impl DruidState {
     /// Corrects for dumb brain.
     fn corrected_volume(&self) -> f32 {
-        (self.volume * self.volume) as f32
+        (self.volume * self.volume * self.volume) as f32
     }
 }
