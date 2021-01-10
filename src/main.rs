@@ -1,26 +1,16 @@
 use anyhow::Result;
 use druid::{
-    widget::{
-        Button,
-        Flex, //, Label
-    },
+    widget::{Button, Flex, Slider},
     Event,
 };
-use druid::{
-    AppLauncher,
-    Data,
-    Lens, //, LocalizedString
-    Widget,
-    WidgetExt,
-    WindowDesc,
-};
-use rodio::OutputStreamHandle;
+use druid::{AppLauncher, Data, Lens, Widget, WidgetExt, WindowDesc};
 use std::{fs::File, sync::Arc};
 use std::{io::BufReader, time::Duration};
 
 const HOSTNAME: &str = "http://localhost:81/";
 const LOCAL_FILENAME: &str = "song.mp3";
 const TIMER_INTERVAL: Duration = Duration::from_millis(100);
+const DEFAULT_VOLUME: f64 = 0.3f64;
 
 struct TimerWidget {
     timer_id: druid::TimerToken,
@@ -39,7 +29,7 @@ impl Widget<DruidState> for TimerWidget {
                 // Start the timer when the application launches
                 self.timer_id = ctx.request_timer(TIMER_INTERVAL);
                 // Start first Song
-                dl_play(&mut data.sink, &data.handle).unwrap();
+                dl_play(data).unwrap_or(());
             }
             Event::Timer(id) => {
                 if *id == self.timer_id {
@@ -58,7 +48,6 @@ impl Widget<DruidState> for TimerWidget {
         _data: &DruidState,
         _env: &druid::Env,
     ) {
-        //todo!()
     }
 
     fn update(
@@ -68,7 +57,6 @@ impl Widget<DruidState> for TimerWidget {
         _data: &DruidState,
         _env: &druid::Env,
     ) {
-        //todo!()
     }
 
     fn layout(
@@ -78,44 +66,30 @@ impl Widget<DruidState> for TimerWidget {
         _data: &DruidState,
         _env: &druid::Env,
     ) -> druid::Size {
-        //todo!()
         bc.constrain((0.0, 0.0))
     }
 
-    fn paint(&mut self, _ctx: &mut druid::PaintCtx, _data: &DruidState, _env: &druid::Env) {
-        //todo!()
-    }
+    fn paint(&mut self, _ctx: &mut druid::PaintCtx, _data: &DruidState, _env: &druid::Env) {}
 }
 
 fn timer_tick(_ctx: &mut druid::EventCtx, data: &mut DruidState) {
-    println!("tick :)");
+    //println!("tick :)");
 
     if let Some(sink) = data.sink.as_ref() {
         if sink.empty() {
             println!("NEUES LIED!");
-            dl_play(&mut data.sink, &data.handle).unwrap();
+            dl_play(data).unwrap_or(());
+        } else {
+            sink.set_volume(data.corrected_volume());
         }
     }
 }
-
-//fn main() -> iced::Result {
-// fn oldmain() -> Result<()> {
-//     //Counter::run(Settings::default())
-//     //loop {}
-
-//     let (_stream, handle) = rodio::OutputStream::try_default()?;
-//     let sink = rodio::Sink::try_new(&handle)?;
-//     //let (handle, sink) = get_sink()?;
-//     dl_play(&sink)?;
-//     // dl()?;
-//     // oldplay()?;
-//     Ok(())
-// }
 
 #[derive(Clone, Data, Lens)]
 struct DruidState {
     handle: Arc<rodio::OutputStreamHandle>,
     sink: Option<Arc<rodio::Sink>>,
+    volume: f64,
 }
 
 fn main() -> Result<()> {
@@ -126,6 +100,7 @@ fn main() -> Result<()> {
     let state = DruidState {
         handle: Arc::new(handle),
         sink: None,
+        volume: DEFAULT_VOLUME,
     };
 
     AppLauncher::with_window(main_window)
@@ -139,14 +114,8 @@ fn main() -> Result<()> {
 }
 
 fn ui_builder() -> impl Widget<DruidState> {
-    // The label text will be computed dynamically based on the current locale and count
-    // let text =
-    //    LocalizedString::new("hello-counter").with_arg("count", |data: DruidState, _env| data);
-    //let label = Label::new(text).padding(5.0).center();
     let button = Button::new("play/skip")
-        .on_click(|_ctx, data: &mut DruidState, _env| {
-            dl_play(&mut data.sink, &data.handle).unwrap_or(())
-        })
+        .on_click(|_ctx, data: &mut DruidState, _env| dl_play(data).unwrap_or(()))
         .padding(5.0);
     let button2 = Button::new("pause/play")
         .on_click(|_ctx, data: &mut DruidState, _env| {
@@ -164,16 +133,25 @@ fn ui_builder() -> impl Widget<DruidState> {
         timer_id: druid::TimerToken::INVALID,
     };
 
+    let volumelabel: druid::widget::Align<DruidState> =
+        druid::widget::Label::new(|data: &DruidState, _env: &_| {
+            format!("Volume: {:.2}", data.volume)
+        })
+        .padding(5.0)
+        .center();
+    let volumeslider = Slider::new().lens(DruidState::volume);
+
     Flex::column()
-        //.with_child(label)
         .with_child(button)
         .with_child(button2)
         .with_child(timer1)
+        .with_child(volumelabel)
+        .with_child(volumeslider)
 }
 
-fn dl_play(sink: &mut Option<Arc<rodio::Sink>>, handle: &OutputStreamHandle) -> Result<()> {
+fn dl_play(data: &mut DruidState) -> Result<()> {
     dl()?;
-    play(sink, handle)?;
+    play(data)?;
     Ok(())
 }
 
@@ -186,37 +164,31 @@ fn dl() -> Result<()> {
     Ok(())
 }
 
-fn play(sinkopt: &mut Option<Arc<rodio::Sink>>, handle: &OutputStreamHandle) -> Result<()> {
+/// Kill old sink and create a new one with the handle from the DruidState.
+/// Play the local sound file.
+fn play(data: &mut DruidState) -> Result<()> {
     let file = File::open(LOCAL_FILENAME)?;
     let sink;
-    if let Some(s) = sinkopt {
+    if let Some(s) = data.sink.as_ref() {
         s.stop();
-        *sinkopt = None;
+        data.sink = None;
     }
 
-    *sinkopt = Some(Arc::new(rodio::Sink::try_new(handle)?));
+    data.sink = Some(Arc::new(rodio::Sink::try_new(&data.handle)?));
 
     // Unwrap als Assert. Es muss eine neue Sink geben.
-    sink = sinkopt.as_ref().unwrap();
+    sink = data.sink.as_ref().unwrap();
     if !sink.empty() {
         sink.stop();
     }
-    sink.set_volume(0.05);
+    sink.set_volume(data.corrected_volume());
     sink.append(rodio::Decoder::new(BufReader::new(file))?);
     Ok(())
 }
 
-// fn oldplay() -> Result<()> {
-//     let (_stream, handle) = rodio::OutputStream::try_default()?;
-//     let sink = rodio::Sink::try_new(&handle)?;
-//     let file = File::open(LOCAL_FILENAME)?;
-//     sink.append(rodio::Decoder::new(BufReader::new(file))?);
-//     sink.sleep_until_end();
-//     Ok(())
-// }
-
-// fn get_sink() -> Result<(rodio::OutputStreamHandle, rodio::Sink)> {
-//     let (_stream, handle) = rodio::OutputStream::try_default()?;
-//     let sink = rodio::Sink::try_new(&handle)?;
-//     Ok((handle, sink))
-// }
+impl DruidState {
+    /// Corrects for dumb brain.
+    fn corrected_volume(&self) -> f32 {
+        (self.volume * self.volume) as f32
+    }
+}
