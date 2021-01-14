@@ -1,10 +1,17 @@
+#![windows_subsystem = "windows"]
+
 use anyhow::Result;
 use druid::{
-    widget::{Button, Flex, Slider},
-    Event,
+    widget::{Align, Button, Flex, Label, List, Slider},
+    BoxConstraints, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size,
+    TimerToken, UpdateCtx,
 };
 use druid::{AppLauncher, Data, Lens, Widget, WidgetExt, WindowDesc};
-use std::{fs::File, sync::Arc, time::Instant};
+use std::{
+    fs::File,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 use std::{io::BufReader, time::Duration};
 
 const HOSTNAME: &str = "http://localhost:81/";
@@ -13,23 +20,17 @@ const TIMER_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_VOLUME: f64 = 0.45f64;
 
 struct TimerWidget {
-    timer_id: druid::TimerToken,
+    timer_id: TimerToken,
 }
 
 impl Widget<DruidState> for TimerWidget {
-    fn event(
-        &mut self,
-        ctx: &mut druid::EventCtx,
-        event: &druid::Event,
-        data: &mut DruidState,
-        _env: &druid::Env,
-    ) {
+    fn event(&mut self, ctx: &mut EventCtx, event: &Event, data: &mut DruidState, _env: &Env) {
         match event {
             Event::WindowConnected => {
                 // Start the timer when the application launches
                 self.timer_id = ctx.request_timer(TIMER_INTERVAL);
                 // Start first Song
-                dl_play(data).unwrap_or(());
+                data.dl_play().unwrap_or(());
             }
             Event::Timer(id) => {
                 if *id == self.timer_id {
@@ -43,42 +44,40 @@ impl Widget<DruidState> for TimerWidget {
 
     fn lifecycle(
         &mut self,
-        _ctx: &mut druid::LifeCycleCtx,
-        _event: &druid::LifeCycle,
+        _ctx: &mut LifeCycleCtx,
+        _event: &LifeCycle,
         _data: &DruidState,
-        _env: &druid::Env,
+        _env: &Env,
     ) {
     }
 
     fn update(
         &mut self,
-        _ctx: &mut druid::UpdateCtx,
+        _ctx: &mut UpdateCtx,
         _old_data: &DruidState,
         _data: &DruidState,
-        _env: &druid::Env,
+        _env: &Env,
     ) {
     }
 
     fn layout(
         &mut self,
-        _ctx: &mut druid::LayoutCtx,
-        bc: &druid::BoxConstraints,
+        _ctx: &mut LayoutCtx,
+        bc: &BoxConstraints,
         _data: &DruidState,
-        _env: &druid::Env,
-    ) -> druid::Size {
+        _env: &Env,
+    ) -> Size {
         bc.constrain((0.0, 0.0))
     }
 
-    fn paint(&mut self, _ctx: &mut druid::PaintCtx, _data: &DruidState, _env: &druid::Env) {}
+    fn paint(&mut self, _ctx: &mut PaintCtx, _data: &DruidState, _env: &Env) {}
 }
 
-fn timer_tick(_ctx: &mut druid::EventCtx, data: &mut DruidState) {
-    //println!("tick :)");
-
+fn timer_tick(_ctx: &mut EventCtx, data: &mut DruidState) {
     if let Some(sink) = data.sink.as_ref() {
         if sink.empty() {
             println!("NEUES LIED!");
-            dl_play(data).unwrap_or(());
+            data.dl_play().unwrap_or(());
         } else {
             sink.set_volume(data.corrected_volume());
             if !sink.is_paused() {
@@ -86,6 +85,12 @@ fn timer_tick(_ctx: &mut druid::EventCtx, data: &mut DruidState) {
                 let delta = now - data.last_timestamp;
                 data.playtime += delta.as_millis();
                 data.last_timestamp = now;
+            }
+        }
+        for i in 0..data.items_ro.len() {
+            if data.items_ro[i].skip {
+                drop(data.drop_song(i));
+                data.queue_song(SongData::fetch_random_song().unwrap())
             }
         }
     }
@@ -96,12 +101,12 @@ struct DruidState {
     handle: Arc<rodio::OutputStreamHandle>,
     sink: Option<Arc<rodio::Sink>>,
     volume: f64,
-    songname: String,
-    id: u32,
     #[data(ignore)]
     last_timestamp: Instant,
     playtime: u128,
-    total_playtime: String,
+    items: Arc<Mutex<Vec<SongData>>>,
+    items_ro: Arc<Vec<SongData>>,
+    current_song: SongData,
 }
 
 fn main() -> Result<()> {
@@ -109,16 +114,23 @@ fn main() -> Result<()> {
 
     let (stream, handle) = rodio::OutputStream::try_default()?;
 
-    let state = DruidState {
+    let to_items = Arc::new(Mutex::new(Vec::<SongData>::new()));
+    let to_items_ro = Arc::new(to_items.lock().unwrap().clone());
+
+    let mut state = DruidState {
         handle: Arc::new(handle),
         sink: None,
         volume: DEFAULT_VOLUME,
-        songname: "None".to_string(),
-        id: 0,
         last_timestamp: Instant::now(),
         playtime: 0,
-        total_playtime: "".to_string(),
+        items: to_items,
+        items_ro: to_items_ro,
+        current_song: SongData::default(),
     };
+
+    for _ in 0..5 {
+        state.queue_song(SongData::fetch_random_song()?);
+    }
 
     AppLauncher::with_window(main_window)
         .use_simple_logger()
@@ -131,43 +143,44 @@ fn main() -> Result<()> {
 }
 
 fn ui_builder() -> impl Widget<DruidState> {
-    let button = Button::new("play/skip")
-        .on_click(|_ctx, data: &mut DruidState, _env| dl_play(data).unwrap_or(()))
+    let button = Button::new("skip")
+        .on_click(|_ctx, data: &mut DruidState, _env| data.dl_play().unwrap_or(()))
         .padding(5.0);
     let button2 = Button::new("pause/play")
         .on_click(|_ctx, data: &mut DruidState, _env| data.toggle_pause())
         .padding(5.0);
 
     let timer1 = TimerWidget {
-        timer_id: druid::TimerToken::INVALID,
+        timer_id: TimerToken::INVALID,
     };
 
-    let songnamelabel: druid::widget::Align<DruidState> =
-        druid::widget::Label::new(|data: &DruidState, _env: &_| {
-            format!("Playing: {}", data.songname)
-        })
-        .padding(5.0)
-        .center();
+    let songnamelabel: Align<DruidState> = Label::new(|data: &DruidState, _: &_| {
+        format!(
+            "Playing: {} - {}",
+            data.current_song.title, data.current_song.artist
+        )
+    })
+    .padding(5.0)
+    .center();
 
-    let progresslabel: druid::widget::Align<DruidState> =
-        druid::widget::Label::new(|data: &DruidState, _env: &_| {
-            format!(
-                "{} / {}",
-                format_songlength((data.playtime / 1000) as u64),
-                data.total_playtime
-            )
-        })
-        .padding(5.0)
-        .center();
+    let progresslabel: Align<DruidState> = Label::new(|data: &DruidState, _env: &_| {
+        format!(
+            "{} / {}",
+            format_songlength((data.playtime / 1000) as u64),
+            data.current_song.playtime
+        )
+    })
+    .padding(5.0)
+    .center();
 
-    let volumelabel: druid::widget::Align<DruidState> =
-        druid::widget::Label::new(|data: &DruidState, _env: &_| {
-            format!("Volume: {:.2}", data.volume)
-        })
-        .padding(5.0)
-        .center();
+    let volumelabel: Align<DruidState> =
+        Label::new(|data: &DruidState, _env: &_| format!("Volume: {:.2}", data.volume))
+            .padding(5.0)
+            .center();
 
     let volumeslider = Slider::new().lens(DruidState::volume);
+
+    let songqueue = List::new(build_song_widget).lens(DruidState::items_ro);
 
     Flex::column()
         .with_child(button)
@@ -177,45 +190,7 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_child(progresslabel)
         .with_child(volumelabel)
         .with_child(volumeslider)
-}
-
-fn dl_play(data: &mut DruidState) -> Result<()> {
-    dl(data)?;
-    set_songdata(data)?;
-    play(data)?;
-    Ok(())
-}
-
-fn set_songdata(data: &mut DruidState) -> Result<()> {
-    let songdata =
-        reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songdata/", data.id))?.text()?;
-    let songdata = json::parse(&songdata)?;
-    let mut result;
-    let mut title = songdata["songname"].to_string();
-    if title.is_empty() {
-        title = songdata["filename"].to_string()
-    };
-    result = title;
-    let artist = songdata["artist"].to_string();
-
-    if !artist.is_empty() {
-        result = format!("{} - {}", artist, result)
-    };
-
-    data.songname = result;
-    data.total_playtime = songdata["length"].to_string();
-
-    Ok(())
-}
-
-fn dl(data: &mut DruidState) -> Result<()> {
-    std::fs::remove_file(LOCAL_FILENAME).unwrap_or(());
-    let id = reqwest::blocking::get(&format!("{}{}", HOSTNAME, "random_id"))?.text()?;
-    let response = reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songs/", id))?.bytes()?;
-    let mut file = File::create(LOCAL_FILENAME)?;
-    std::io::copy(&mut response.as_ref(), &mut file)?;
-    data.id = id.parse()?;
-    Ok(())
+        .with_child(songqueue)
 }
 
 fn format_songlength(seconds: u64) -> String {
@@ -230,31 +205,24 @@ fn format_songlength(seconds: u64) -> String {
     }
 }
 
-/// Kill old sink and create a new one with the handle from the DruidState.
-/// Play the local sound file.
-fn play(data: &mut DruidState) -> Result<()> {
-    let file = File::open(LOCAL_FILENAME)?;
-    let sink;
-    if let Some(s) = data.sink.as_ref() {
-        s.stop();
-        data.sink = None;
-    }
-
-    data.sink = Some(Arc::new(rodio::Sink::try_new(&data.handle)?));
-
-    // Unwrap als Assert. Es muss eine neue Sink geben.
-    sink = data.sink.as_ref().unwrap();
-    if !sink.empty() {
-        sink.stop();
-    }
-    sink.set_volume(data.corrected_volume());
-    sink.append(rodio::Decoder::new(BufReader::new(file))?);
-    data.last_timestamp = Instant::now();
-    data.playtime = 0;
-    Ok(())
-}
-
 impl DruidState {
+    fn dl(&mut self) -> Result<()> {
+        let id = &self.current_song.id;
+        let response =
+            reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songs/", id))?.bytes()?;
+        let mut file = File::create(LOCAL_FILENAME)?;
+        std::io::copy(&mut response.as_ref(), &mut file)?;
+        Ok(())
+    }
+
+    fn dl_play(&mut self) -> Result<()> {
+        self.current_song = self.drop_song(0)?;
+        self.dl()?;
+        self.play()?;
+        self.queue_song(SongData::fetch_random_song()?);
+        Ok(())
+    }
+
     /// Corrects for dumb brain.
     fn corrected_volume(&self) -> f32 {
         (self.volume * self.volume * self.volume) as f32 // ^2 or ^3? hmmm...
@@ -270,4 +238,104 @@ impl DruidState {
             }
         }
     }
+
+    fn drop_song(&mut self, index: usize) -> Result<SongData> {
+        let mut a = self.items.lock().unwrap();
+        if index < a.len() {
+            let out = a.remove(index);
+            self.items_ro = Arc::new(a.clone());
+            Ok(out)
+        } else {
+            Err(anyhow::anyhow!("invalid song index!"))
+        }
+    }
+
+    fn queue_song(&mut self, song: SongData) {
+        let mut a = self.items.lock().unwrap();
+        a.push(song);
+        self.items_ro = Arc::new(a.clone());
+    }
+
+    // fn is_paused(&self) -> bool {
+    //     if let Some(ref sink) = self.sink {
+    //         sink.is_paused()
+    //     } else {
+    //         false
+    //     }
+    // }
+
+    /// Kill old sink and create a new one with the handle from the DruidState.
+    /// Play the local sound file.
+    fn play(&mut self) -> Result<()> {
+        let file = File::open(LOCAL_FILENAME)?;
+        let sink;
+        if let Some(s) = self.sink.as_ref() {
+            s.stop();
+            self.sink = None;
+        }
+
+        self.sink = Some(Arc::new(rodio::Sink::try_new(&self.handle)?));
+
+        // Unwrap als Assert. Es muss eine neue Sink geben.
+        sink = self.sink.as_ref().unwrap();
+        if !sink.empty() {
+            sink.stop();
+        }
+        sink.set_volume(self.corrected_volume());
+        sink.append(rodio::Decoder::new(BufReader::new(file))?);
+        self.last_timestamp = Instant::now();
+        self.playtime = 0;
+        Ok(())
+    }
+}
+
+/// Einzelner Song
+#[derive(Clone, Data, Lens, Default)]
+struct SongData {
+    id: String,
+    title: String,
+    artist: String,
+    album: String,
+    playtime: String,
+    rating: u32,
+    skip: bool,
+}
+
+impl SongData {
+    fn fetch_random_song() -> Result<SongData> {
+        let mut result = SongData::default();
+
+        let id = reqwest::blocking::get(&format!("{}{}", HOSTNAME, "random_id"))?.text()?;
+
+        let songdata =
+            reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songdata/", id))?.text()?;
+        let songdata = json::parse(&songdata)?;
+        let mut title = songdata["songname"].to_string();
+        if title.is_empty() {
+            title = songdata["filename"].to_string()
+        };
+
+        result.id = id;
+        result.title = title;
+        result.artist = songdata["artist"].to_string();
+        result.album = songdata["album"].to_string();
+        result.playtime = songdata["length"].to_string();
+        result.rating = songdata["rating"].to_string().parse().unwrap_or_default();
+        result.skip = false;
+
+        Ok(result)
+    }
+}
+
+fn build_song_widget() -> impl Widget<SongData> {
+    let songlabel: Align<SongData> = Label::new(|data: &SongData, _env: &_| {
+        format!("{} - {} ({})", data.title, data.artist, data.playtime)
+    })
+    .padding(5.0)
+    .center();
+
+    let skip = Button::new("Skip")
+        .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| song.skip = true);
+
+    Flex::row().with_child(skip).with_child(songlabel)
 }
