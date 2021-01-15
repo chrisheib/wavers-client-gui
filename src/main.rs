@@ -13,11 +13,12 @@ use std::{
     time::Instant,
 };
 use std::{io::BufReader, time::Duration};
+use unicode_segmentation::UnicodeSegmentation;
 
 const HOSTNAME: &str = "http://localhost:81/";
 const LOCAL_FILENAME: &str = "song.mp3";
 const TIMER_INTERVAL: Duration = Duration::from_millis(100);
-const DEFAULT_VOLUME: f64 = 0.45f64;
+const DEFAULT_VOLUME: f64 = 0.30f64;
 
 struct TimerWidget {
     timer_id: TimerToken,
@@ -143,12 +144,23 @@ fn main() -> Result<()> {
 }
 
 fn ui_builder() -> impl Widget<DruidState> {
-    let button = Button::new("skip")
+    let btn_skip = Button::new("skip")
         .on_click(|_ctx, data: &mut DruidState, _env| data.dl_play().unwrap_or(()))
         .padding(5.0);
-    let button2 = Button::new("pause/play")
-        .on_click(|_ctx, data: &mut DruidState, _env| data.toggle_pause())
-        .padding(5.0);
+
+    let btn_upvote =
+        Button::new("👍").on_click(|_: &mut EventCtx, data: &mut DruidState, _: &Env| {
+            data.current_song.updoot().unwrap_or_default()
+        });
+
+    let btn_downvote =
+        Button::new("👎").on_click(|_: &mut EventCtx, data: &mut DruidState, _: &Env| {
+            data.current_song.downdoot().unwrap_or_default();
+            data.dl_play().unwrap_or(());
+        });
+
+    let btn_pauseplay =
+        Button::new("pause/play").on_click(|_ctx, data: &mut DruidState, _env| data.toggle_pause());
 
     let timer1 = TimerWidget {
         timer_id: TimerToken::INVALID,
@@ -156,8 +168,8 @@ fn ui_builder() -> impl Widget<DruidState> {
 
     let songnamelabel: Align<DruidState> = Label::new(|data: &DruidState, _: &_| {
         format!(
-            "Playing: {} - {}",
-            data.current_song.title, data.current_song.artist
+            "Playing: {} - {} <{}>",
+            data.current_song.title, data.current_song.artist, data.current_song.rating
         )
     })
     .padding(5.0)
@@ -182,9 +194,14 @@ fn ui_builder() -> impl Widget<DruidState> {
 
     let songqueue = List::new(build_song_widget).lens(DruidState::items_ro);
 
+    let row1 = Flex::row()
+        .with_child(btn_pauseplay)
+        .with_child(btn_skip)
+        .with_child(btn_upvote)
+        .with_child(btn_downvote);
+
     Flex::column()
-        .with_child(button)
-        .with_child(button2)
+        .with_child(row1)
         .with_child(timer1)
         .with_child(songnamelabel)
         .with_child(progresslabel)
@@ -325,17 +342,64 @@ impl SongData {
 
         Ok(result)
     }
+
+    fn updoot(&self) -> Result<()> {
+        reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "upvote/", self.id))?;
+        Ok(())
+    }
+
+    fn downdoot(&self) -> Result<()> {
+        reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "downvote/", self.id))?;
+        Ok(())
+    }
+}
+
+fn limit_str(data: &str, maxlength: usize) -> String {
+    let graph = data.graphemes(true).collect::<Vec<&str>>();
+    let slice = if graph.len() > maxlength {
+        &graph[..maxlength]
+    } else {
+        &graph[..]
+    };
+    slice.join("")
 }
 
 fn build_song_widget() -> impl Widget<SongData> {
     let songlabel: Align<SongData> = Label::new(|data: &SongData, _env: &_| {
-        format!("{} - {} ({})", data.title, data.artist, data.playtime)
+        format!(
+            "{} - {} ",
+            limit_str(&data.title, 40),
+            limit_str(&data.artist, 40)
+        )
     })
     .padding(5.0)
     .center();
 
+    let playtimelabel: Align<SongData> =
+        Label::new(|data: &SongData, _env: &_| format!("({}) <{}>", data.playtime, data.rating))
+            .padding(5.0)
+            .align_right();
+
     let skip = Button::new("Skip")
         .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| song.skip = true);
 
-    Flex::row().with_child(skip).with_child(songlabel)
+    let btn_upvote =
+        Button::new("👍").on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| {
+            song.updoot().unwrap_or_default()
+        });
+
+    let btn_downvote =
+        Button::new("👎").on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| {
+            song.downdoot().unwrap_or_default()
+        });
+
+    //let align = Align::horizontal(druid::UnitPoint::TOP, child)
+    //let align = Align::right(playtimelabel);
+
+    Flex::row()
+        .with_child(skip)
+        .with_child(btn_upvote)
+        .with_child(btn_downvote)
+        .with_child(songlabel)
+        .with_flex_child(Align::right(playtimelabel), 1.0)
 }

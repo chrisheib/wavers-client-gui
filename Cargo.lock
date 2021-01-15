@@ -2182,6 +2182,7 @@ dependencies = [
  "json",
  "reqwest",
  "rodio",
+ "unicode-segmentation",
 ]
 
 [[package]]
