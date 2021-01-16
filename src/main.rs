@@ -1,7 +1,6 @@
 #![windows_subsystem = "windows"]
 
 use anyhow::Result;
-use bytes::Bytes;
 use druid::{
     widget::{Align, Button, Flex, Label, List, Slider},
     BoxConstraints, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size,
@@ -15,6 +14,8 @@ use unicode_segmentation::UnicodeSegmentation;
 const HOSTNAME: &str = "http://localhost:81/";
 const TIMER_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_VOLUME: f64 = 0.30f64;
+const WINDOW_WIDTH: f64 = 650f64;
+const WINDOW_HEIGHT: f64 = 350f64;
 
 struct TimerWidget {
     timer_id: TimerToken,
@@ -115,7 +116,8 @@ struct DruidState {
 
 fn main() -> Result<()> {
     let main_window = WindowDesc::new(ui_builder)
-        .window_size((600f64, 50f64))
+        .with_min_size((WINDOW_WIDTH, WINDOW_HEIGHT))
+        .window_size((WINDOW_WIDTH, WINDOW_HEIGHT))
         .title("Rust PLAY");
 
     let (stream, handle) = rodio::OutputStream::try_default()?;
@@ -237,9 +239,13 @@ fn format_songlength(seconds: u64) -> String {
 }
 
 impl DruidState {
-    fn dl(&mut self) -> Result<Bytes> {
+    fn dl(&mut self) -> Result<Vec<u8>> {
         let id = &self.current_song.id;
-        Ok(reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songs/", id))?.bytes()?)
+        Ok(
+            reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songs/", id))?
+                .bytes()?
+                .to_vec(),
+        )
     }
 
     fn dl_play(&mut self) -> Result<()> {
@@ -281,7 +287,7 @@ impl DruidState {
 
     /// Kill old sink and create a new one with the handle from the DruidState.
     /// Play the local sound file.
-    fn play(&mut self, song: Bytes) -> Result<()> {
+    fn play(&mut self, song: Vec<u8>) -> Result<()> {
         // Create new sink
         let sink;
         if let Some(s) = self.sink.as_ref() {
@@ -298,7 +304,7 @@ impl DruidState {
 
         sink.set_volume(self.corrected_volume());
 
-        let cursor = std::io::Cursor::new(song.to_vec());
+        let cursor = std::io::Cursor::new(song);
         let decode = rodio::Decoder::new_mp3(cursor)?;
 
         sink.append(decode);
@@ -377,7 +383,7 @@ fn build_song_widget() -> impl Widget<SongData> {
         format!(
             "{} - {} ",
             limit_str(&data.title, 40),
-            limit_str(&data.artist, 40)
+            limit_str(&data.artist, 30)
         )
     })
     .padding(5.0)

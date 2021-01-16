@@ -13,4 +13,3 @@ reqwest = {version = "0", features = ["blocking"]} # downloads & http requests
 anyhow = "1" # Error handling
 json = "0" # Json parsing
 unicode-segmentation = "1"
-bytes = "1"
