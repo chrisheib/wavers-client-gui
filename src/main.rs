@@ -7,11 +7,7 @@ use druid::{
     TimerToken, UpdateCtx,
 };
 use druid::{AppLauncher, Data, Lens, Widget, WidgetExt, WindowDesc};
-use std::{
-    fs::File,
-    sync::{Arc, Mutex},
-    time::Instant,
-};
+use std::{fs::File, sync::Arc, time::Instant};
 use std::{io::BufReader, time::Duration};
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -88,24 +84,15 @@ fn timer_tick(_ctx: &mut EventCtx, data: &mut DruidState) {
                 let delta = now - data.last_timestamp;
                 data.playtime += delta.as_millis();
                 data.last_timestamp = now;
-                data.paused = true;
-            } else {
                 data.paused = false;
+            } else {
+                data.paused = true;
             }
         }
-
-        // transfer upvote state from ro-list to real data
-        let mut real_songs = data.items.lock().unwrap();
-        for i in 0..data.items_ro.len() {
-            if data.items_ro[i].updooted & !real_songs[i].updooted {
-                real_songs[i].updooted = true;
-            }
-        }
-        drop(real_songs);
 
         // look if song is to be deleted
-        for i in 0..data.items_ro.len() {
-            if data.items_ro[i].skip {
+        for i in 0..data.items.len() {
+            if data.items[i].skip {
                 drop(data.drop_song(i));
                 data.queue_song(SongData::fetch_random_song().unwrap())
             }
@@ -121,8 +108,7 @@ struct DruidState {
     #[data(ignore)]
     last_timestamp: Instant,
     playtime: u128,
-    items: Arc<Mutex<Vec<SongData>>>,
-    items_ro: Arc<Vec<SongData>>,
+    items: druid::im::Vector<SongData>,
     current_song: SongData,
     paused: bool,
 }
@@ -134,17 +120,13 @@ fn main() -> Result<()> {
 
     let (stream, handle) = rodio::OutputStream::try_default()?;
 
-    let to_items = Arc::new(Mutex::new(Vec::<SongData>::new()));
-    let to_items_ro = Arc::new(to_items.lock().unwrap().clone());
-
     let mut state = DruidState {
         handle: Arc::new(handle),
         sink: None,
         volume: DEFAULT_VOLUME,
         last_timestamp: Instant::now(),
         playtime: 0,
-        items: to_items,
-        items_ro: to_items_ro,
+        items: Default::default(),
         current_song: SongData::default(),
         paused: false,
     };
@@ -224,7 +206,7 @@ fn ui_builder() -> impl Widget<DruidState> {
 
     let volumeslider = Slider::new().lens(DruidState::volume);
 
-    let songqueue = List::new(build_song_widget).lens(DruidState::items_ro);
+    let songqueue = List::new(build_song_widget).lens(DruidState::items);
 
     let row1 = Flex::row()
         .with_child(btn_pauseplay)
@@ -289,10 +271,8 @@ impl DruidState {
     }
 
     fn drop_song(&mut self, index: usize) -> Result<SongData> {
-        let mut a = self.items.lock().unwrap();
-        if index < a.len() {
-            let out = a.remove(index);
-            self.items_ro = Arc::new(a.clone());
+        if index < self.items.len() {
+            let out = self.items.remove(index);
             Ok(out)
         } else {
             Err(anyhow::anyhow!("invalid song index!"))
@@ -300,9 +280,7 @@ impl DruidState {
     }
 
     fn queue_song(&mut self, song: SongData) {
-        let mut a = self.items.lock().unwrap();
-        a.push(song);
-        self.items_ro = Arc::new(a.clone());
+        self.items.push_back(song);
     }
 
     /// Kill old sink and create a new one with the handle from the DruidState.
