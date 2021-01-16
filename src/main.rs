@@ -76,6 +76,8 @@ impl Widget<DruidState> for TimerWidget {
 
 fn timer_tick(_ctx: &mut EventCtx, data: &mut DruidState) {
     if let Some(sink) = data.sink.as_ref() {
+        // check for autoplay, set volume, advance playtime display
+        // look if pause button label needs to be updated
         if sink.empty() {
             println!("NEUES LIED!");
             data.dl_play().unwrap_or(());
@@ -86,8 +88,22 @@ fn timer_tick(_ctx: &mut EventCtx, data: &mut DruidState) {
                 let delta = now - data.last_timestamp;
                 data.playtime += delta.as_millis();
                 data.last_timestamp = now;
+                data.paused = true;
+            } else {
+                data.paused = false;
             }
         }
+
+        // transfer upvote state from ro-list to real data
+        let mut real_songs = data.items.lock().unwrap();
+        for i in 0..data.items_ro.len() {
+            if data.items_ro[i].updooted & !real_songs[i].updooted {
+                real_songs[i].updooted = true;
+            }
+        }
+        drop(real_songs);
+
+        // look if song is to be deleted
         for i in 0..data.items_ro.len() {
             if data.items_ro[i].skip {
                 drop(data.drop_song(i));
@@ -108,10 +124,13 @@ struct DruidState {
     items: Arc<Mutex<Vec<SongData>>>,
     items_ro: Arc<Vec<SongData>>,
     current_song: SongData,
+    paused: bool,
 }
 
 fn main() -> Result<()> {
-    let main_window = WindowDesc::new(ui_builder).window_size((750f64, 50f64));
+    let main_window = WindowDesc::new(ui_builder)
+        .window_size((600f64, 50f64))
+        .title("Rust PLAY");
 
     let (stream, handle) = rodio::OutputStream::try_default()?;
 
@@ -127,6 +146,7 @@ fn main() -> Result<()> {
         items: to_items,
         items_ro: to_items_ro,
         current_song: SongData::default(),
+        paused: false,
     };
 
     for _ in 0..5 {
@@ -144,14 +164,20 @@ fn main() -> Result<()> {
 }
 
 fn ui_builder() -> impl Widget<DruidState> {
-    let btn_skip = Button::new("skip")
+    let btn_skip = Button::new("⏭")
         .on_click(|_ctx, data: &mut DruidState, _env| data.dl_play().unwrap_or(()))
         .padding(5.0);
 
-    let btn_upvote =
-        Button::new("👍").on_click(|_: &mut EventCtx, data: &mut DruidState, _: &Env| {
-            data.current_song.updoot().unwrap_or_default()
-        });
+    let btn_upvote = Button::new(|data: &DruidState, _: &Env| {
+        if !data.current_song.updooted {
+            "👍".to_string()
+        } else {
+            "👍✓".to_string()
+        }
+    })
+    .on_click(|_: &mut EventCtx, data: &mut DruidState, _: &Env| {
+        data.current_song.updoot().unwrap_or_default()
+    });
 
     let btn_downvote =
         Button::new("👎").on_click(|_: &mut EventCtx, data: &mut DruidState, _: &Env| {
@@ -159,8 +185,14 @@ fn ui_builder() -> impl Widget<DruidState> {
             data.dl_play().unwrap_or(());
         });
 
-    let btn_pauseplay =
-        Button::new("pause/play").on_click(|_ctx, data: &mut DruidState, _env| data.toggle_pause());
+    let btn_pauseplay = Button::new(|data: &DruidState, _: &Env| {
+        if data.paused {
+            "⏵".to_string()
+        } else {
+            "⏸︎".to_string()
+        }
+    })
+    .on_click(|_ctx, data: &mut DruidState, _env| data.toggle_pause());
 
     let timer1 = TimerWidget {
         timer_id: TimerToken::INVALID,
@@ -273,14 +305,6 @@ impl DruidState {
         self.items_ro = Arc::new(a.clone());
     }
 
-    // fn is_paused(&self) -> bool {
-    //     if let Some(ref sink) = self.sink {
-    //         sink.is_paused()
-    //     } else {
-    //         false
-    //     }
-    // }
-
     /// Kill old sink and create a new one with the handle from the DruidState.
     /// Play the local sound file.
     fn play(&mut self) -> Result<()> {
@@ -316,6 +340,8 @@ struct SongData {
     playtime: String,
     rating: u32,
     skip: bool,
+    updooted: bool,
+    updoot_sync_marker: bool,
 }
 
 impl SongData {
@@ -343,8 +369,11 @@ impl SongData {
         Ok(result)
     }
 
-    fn updoot(&self) -> Result<()> {
-        reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "upvote/", self.id))?;
+    fn updoot(&mut self) -> Result<()> {
+        if !self.updooted {
+            reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "upvote/", self.id))?;
+            self.updooted = true;
+        }
         Ok(())
     }
 
@@ -380,21 +409,22 @@ fn build_song_widget() -> impl Widget<SongData> {
             .padding(5.0)
             .align_right();
 
-    let skip = Button::new("Skip")
+    let skip = Button::new("✘")
         .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| song.skip = true);
 
-    let btn_upvote =
-        Button::new("👍").on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| {
-            song.updoot().unwrap_or_default()
-        });
+    let btn_upvote = Button::new(|song: &SongData, _: &Env| {
+        if !song.updooted {
+            "👍".to_string()
+        } else {
+            "👍✓".to_string()
+        }
+    })
+    .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| song.updoot().unwrap_or_default());
 
     let btn_downvote =
         Button::new("👎").on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| {
             song.downdoot().unwrap_or_default()
         });
-
-    //let align = Align::horizontal(druid::UnitPoint::TOP, child)
-    //let align = Align::right(playtimelabel);
 
     Flex::row()
         .with_child(skip)
