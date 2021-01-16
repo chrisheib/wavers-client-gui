@@ -1,18 +1,18 @@
 #![windows_subsystem = "windows"]
 
 use anyhow::Result;
+use bytes::Bytes;
 use druid::{
     widget::{Align, Button, Flex, Label, List, Slider},
     BoxConstraints, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size,
     TimerToken, UpdateCtx,
 };
 use druid::{AppLauncher, Data, Lens, Widget, WidgetExt, WindowDesc};
-use std::{fs::File, sync::Arc, time::Instant};
-use std::{io::BufReader, time::Duration};
+use std::time::Duration;
+use std::{sync::Arc, time::Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
 const HOSTNAME: &str = "http://localhost:81/";
-const LOCAL_FILENAME: &str = "song.mp3";
 const TIMER_INTERVAL: Duration = Duration::from_millis(100);
 const DEFAULT_VOLUME: f64 = 0.30f64;
 
@@ -237,19 +237,15 @@ fn format_songlength(seconds: u64) -> String {
 }
 
 impl DruidState {
-    fn dl(&mut self) -> Result<()> {
+    fn dl(&mut self) -> Result<Bytes> {
         let id = &self.current_song.id;
-        let response =
-            reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songs/", id))?.bytes()?;
-        let mut file = File::create(LOCAL_FILENAME)?;
-        std::io::copy(&mut response.as_ref(), &mut file)?;
-        Ok(())
+        Ok(reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songs/", id))?.bytes()?)
     }
 
     fn dl_play(&mut self) -> Result<()> {
         self.current_song = self.drop_song(0)?;
-        self.dl()?;
-        self.play()?;
+        let song = self.dl()?;
+        self.play(song)?;
         self.queue_song(SongData::fetch_random_song()?);
         Ok(())
     }
@@ -285,14 +281,13 @@ impl DruidState {
 
     /// Kill old sink and create a new one with the handle from the DruidState.
     /// Play the local sound file.
-    fn play(&mut self) -> Result<()> {
-        let file = File::open(LOCAL_FILENAME)?;
+    fn play(&mut self, song: Bytes) -> Result<()> {
+        // Create new sink
         let sink;
         if let Some(s) = self.sink.as_ref() {
             s.stop();
             self.sink = None;
         }
-
         self.sink = Some(Arc::new(rodio::Sink::try_new(&self.handle)?));
 
         // Unwrap als Assert. Es muss eine neue Sink geben.
@@ -300,8 +295,14 @@ impl DruidState {
         if !sink.empty() {
             sink.stop();
         }
+
         sink.set_volume(self.corrected_volume());
-        sink.append(rodio::Decoder::new(BufReader::new(file))?);
+
+        let cursor = std::io::Cursor::new(song.to_vec());
+        let decode = rodio::Decoder::new_mp3(cursor)?;
+
+        sink.append(decode);
+
         self.last_timestamp = Instant::now();
         self.playtime = 0;
         Ok(())

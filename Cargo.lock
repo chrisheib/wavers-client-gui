@@ -2211,6 +2211,7 @@ name = "rs-music-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytes 1.0.0",
  "druid",
  "json",
  "reqwest",

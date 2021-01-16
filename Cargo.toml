@@ -7,9 +7,10 @@ edition = "2018"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rodio = "0" # audio player
+rodio = {version = "0", features = ["mp3"]} # audio player
 druid = {version = "0", features = ["im"]} # GUI
 reqwest = {version = "0", features = ["blocking"]} # downloads & http requests
 anyhow = "1" # Error handling
 json = "0" # Json parsing
 unicode-segmentation = "1"
+bytes = "1"
