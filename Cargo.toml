@@ -4,6 +4,12 @@ version = "0.1.0"
 authors = ["STSchiff <chrisheib@gmx.de>"]
 edition = "2018"
 
+# For including the icon, winres requires
+# rc.exe from https://developer.microsoft.com/en-us/windows/downloads/windows-10-sdk
+# and windres.exe and ar.exe from http://mingw-w64.org/
+# to be included in path
+build = "src/build.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
@@ -13,3 +19,9 @@ reqwest = {version = "0", features = ["blocking"]} # downloads & http requests
 anyhow = "1" # Error handling
 json = "0" # Json parsing
 unicode-segmentation = "1"
+
+[build-dependencies]
+winres = "0.1"
+
+[profile.release]
+lto = true

@@ -1,5 +1,9 @@
 #![windows_subsystem = "windows"]
 
+//"C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\rc.exe"
+//"C:\Strawberry\c\x86_64-w64-mingw32\bin\ar.exe"
+//"C:\Strawberry\c\bin\windres.exe"
+
 use anyhow::Result;
 use druid::{
     widget::{Align, Button, Flex, Label, List, Slider},
