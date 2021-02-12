@@ -13,12 +13,15 @@ build = "src/build.rs"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-rodio = {version = "0", features = ["mp3"]} # audio player
-druid = {version = "0", features = ["im"]} # GUI
-reqwest = {version = "0", features = ["blocking"]} # downloads & http requests
-anyhow = "1" # Error handling
-json = "0" # Json parsing
-unicode-segmentation = "1"
+rodio = {version = "0.13", features = ["mp3"]} # audio player
+druid = {version = "0.7", features = ["im"]} # GUI
+reqwest = {version = "0.11", features = ["blocking"]} # downloads & http requests
+stable-eyre = "0.2" # Error handling
+json = "0.12" # Json parsing
+unicode-segmentation = "1.7"
+confy = "0.4"
+serde = "1.0"
+serde_derive = "1.0"
 
 [build-dependencies]
 winres = "0.1"

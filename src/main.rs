@@ -1,28 +1,46 @@
 #![windows_subsystem = "windows"]
 
+use serde_derive::{Deserialize, Serialize};
+
 //"C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\rc.exe"
 //"C:\Strawberry\c\x86_64-w64-mingw32\bin\ar.exe"
 //"C:\Strawberry\c\bin\windres.exe"
 
-use anyhow::Result;
 use druid::{
     widget::{Align, Button, Flex, Label, List, Slider},
     BoxConstraints, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size,
     TimerToken, UpdateCtx,
 };
 use druid::{AppLauncher, Data, Lens, Widget, WidgetExt, WindowDesc};
+use stable_eyre::Result;
 use std::time::Duration;
 use std::{sync::Arc, time::Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
-const HOSTNAME: &str = "http://localhost:81/";
 const TIMER_INTERVAL: Duration = Duration::from_millis(100);
-const DEFAULT_VOLUME: f64 = 0.30f64;
 const WINDOW_WIDTH: f64 = 650f64;
 const WINDOW_HEIGHT: f64 = 350f64;
 
+#[derive(Clone, Serialize, Deserialize)]
+struct MyConfig {
+    default_volume: f64,
+    hostname: String,
+    port: String,
+}
+
+impl ::std::default::Default for MyConfig {
+    fn default() -> Self {
+        Self {
+            default_volume: 0.30f64,
+            hostname: "localhost".into(),
+            port: "81".into(),
+        }
+    }
+}
+
 struct TimerWidget {
     timer_id: TimerToken,
+    fps_timer_id: TimerToken,
 }
 
 impl Widget<DruidState> for TimerWidget {
@@ -31,6 +49,7 @@ impl Widget<DruidState> for TimerWidget {
             Event::WindowConnected => {
                 // Start the timer when the application launches
                 self.timer_id = ctx.request_timer(TIMER_INTERVAL);
+                self.fps_timer_id = ctx.request_timer(Duration::from_millis(10));
                 // Start first Song
                 data.dl_play().unwrap_or(());
             }
@@ -38,6 +57,10 @@ impl Widget<DruidState> for TimerWidget {
                 if *id == self.timer_id {
                     self.timer_id = ctx.request_timer(TIMER_INTERVAL);
                     timer_tick(ctx, data);
+                }
+                if *id == self.fps_timer_id {
+                    self.fps_timer_id = ctx.request_timer(Duration::from_millis(10));
+                    ctx.window().invalidate();
                 }
             }
             _ => (),
@@ -99,7 +122,7 @@ fn timer_tick(_ctx: &mut EventCtx, data: &mut DruidState) {
         for i in 0..data.items.len() {
             if data.items[i].skip {
                 drop(data.drop_song(i));
-                data.queue_song(SongData::fetch_random_song().unwrap())
+                data.queue_song(SongData::fetch_random_song(data).unwrap())
             }
         }
     }
@@ -116,30 +139,46 @@ struct DruidState {
     items: druid::im::Vector<SongData>,
     current_song: SongData,
     paused: bool,
+    #[data(ignore)]
+    config: MyConfig,
 }
 
 fn main() -> Result<()> {
+    println!("vor window");
     let main_window = WindowDesc::new(ui_builder)
         .with_min_size((WINDOW_WIDTH, WINDOW_HEIGHT))
         .window_size((WINDOW_WIDTH, WINDOW_HEIGHT))
-        .title("Rust PLAY");
+        .title("Wavers");
+
+    println!("nach window vor config");
+
+    let cfg: MyConfig = confy::load_path("wavers-gui.conf")?;
+
+    println!("nach config vor audio");
 
     let (stream, handle) = rodio::OutputStream::try_default()?;
+
+    println!("nach audio vor state");
 
     let mut state = DruidState {
         handle: Arc::new(handle),
         sink: None,
-        volume: DEFAULT_VOLUME,
+        volume: cfg.default_volume,
         last_timestamp: Instant::now(),
         playtime: 0,
         items: Default::default(),
         current_song: SongData::default(),
         paused: false,
+        config: cfg,
     };
 
+    println!("nach state vor fetch");
+
     for _ in 0..5 {
-        state.queue_song(SongData::fetch_random_song()?);
+        state.queue_song(SongData::fetch_random_song(&state)?);
     }
+
+    println!("2");
 
     AppLauncher::with_window(main_window)
         .use_simple_logger()
@@ -184,6 +223,7 @@ fn ui_builder() -> impl Widget<DruidState> {
 
     let timer1 = TimerWidget {
         timer_id: TimerToken::INVALID,
+        fps_timer_id: TimerToken::INVALID,
     };
 
     let songnamelabel: Align<DruidState> = Label::new(|data: &DruidState, _: &_| {
@@ -245,18 +285,19 @@ fn format_songlength(seconds: u64) -> String {
 impl DruidState {
     fn dl(&mut self) -> Result<Vec<u8>> {
         let id = &self.current_song.id;
-        Ok(
-            reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songs/", id))?
-                .bytes()?
-                .to_vec(),
-        )
+        Ok(reqwest::blocking::get(&format!(
+            "http://{}:{}/songs/{}",
+            self.config.hostname, self.config.port, id
+        ))?
+        .bytes()?
+        .to_vec())
     }
 
     fn dl_play(&mut self) -> Result<()> {
         self.current_song = self.drop_song(0)?;
         let song = self.dl()?;
         self.play(song)?;
-        self.queue_song(SongData::fetch_random_song()?);
+        self.queue_song(SongData::fetch_random_song(&self)?);
         Ok(())
     }
 
@@ -281,7 +322,7 @@ impl DruidState {
             let out = self.items.remove(index);
             Ok(out)
         } else {
-            Err(anyhow::anyhow!("invalid song index!"))
+            Err(stable_eyre::eyre::eyre!("invalid song index!"))
         }
     }
 
@@ -331,16 +372,26 @@ struct SongData {
     skip: bool,
     updooted: bool,
     updoot_sync_marker: bool,
+    #[data(ignore)]
+    config: MyConfig,
 }
 
 impl SongData {
-    fn fetch_random_song() -> Result<SongData> {
+    fn fetch_random_song(data: &DruidState) -> Result<SongData> {
         let mut result = SongData::default();
+        result.config = data.config.clone();
 
-        let id = reqwest::blocking::get(&format!("{}{}", HOSTNAME, "random_id"))?.text()?;
+        let id = reqwest::blocking::get(&format!(
+            "http://{}:{}/random_id",
+            result.config.hostname, result.config.port
+        ))?
+        .text()?;
 
-        let songdata =
-            reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "songdata/", id))?.text()?;
+        let songdata = reqwest::blocking::get(&format!(
+            "http://{}:{}/songdata/{}",
+            result.config.hostname, result.config.port, id
+        ))?
+        .text()?;
         let songdata = json::parse(&songdata)?;
         let mut title = songdata["songname"].to_string();
         if title.is_empty() {
@@ -360,14 +411,20 @@ impl SongData {
 
     fn updoot(&mut self) -> Result<()> {
         if !self.updooted {
-            reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "upvote/", self.id))?;
+            reqwest::blocking::get(&format!(
+                "http://{}:{}/upvote/{}",
+                self.config.hostname, self.config.port, self.id
+            ))?;
             self.updooted = true;
         }
         Ok(())
     }
 
     fn downdoot(&self) -> Result<()> {
-        reqwest::blocking::get(&format!("{}{}{}", HOSTNAME, "downvote/", self.id))?;
+        reqwest::blocking::get(&format!(
+            "http://{}:{}/downvote/{}",
+            self.config.hostname, self.config.port, self.id
+        ))?;
         Ok(())
     }
 }
