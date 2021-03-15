@@ -8,8 +8,8 @@ use serde_derive::{Deserialize, Serialize};
 
 use druid::{
     widget::{Align, Button, Flex, Label, List, Slider},
-    BoxConstraints, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx, Size,
-    TimerToken, UpdateCtx,
+    BoxConstraints, Color, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx,
+    Size, TimerToken, UpdateCtx,
 };
 use druid::{AppLauncher, Data, Lens, Widget, WidgetExt, WindowDesc};
 use stable_eyre::Result;
@@ -18,8 +18,8 @@ use std::{sync::Arc, time::Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
 const TIMER_INTERVAL: Duration = Duration::from_millis(100);
-const WINDOW_WIDTH: f64 = 650f64;
-const WINDOW_HEIGHT: f64 = 350f64;
+const WINDOW_WIDTH: f64 = 850f64;
+const WINDOW_HEIGHT: f64 = 770f64;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct MyConfig {
@@ -174,7 +174,7 @@ fn main() -> Result<()> {
 
     println!("nach state vor fetch");
 
-    for _ in 0..5 {
+    for _ in 0..7 {
         state.queue_song(SongData::fetch_random_song(&state)?);
     }
 
@@ -228,12 +228,17 @@ fn ui_builder() -> impl Widget<DruidState> {
 
     let songnamelabel: Align<DruidState> = Label::new(|data: &DruidState, _: &_| {
         format!(
-            "Playing: {} - {} <{}>",
-            data.current_song.title, data.current_song.artist, data.current_song.rating
+            "{} <{}>",
+            limit_str(&data.current_song.title, 80),
+            &data.current_song.rating
         )
     })
-    .padding(5.0)
     .center();
+    let albumlabel: Align<DruidState> =
+        Label::new(|data: &DruidState, _: &_| limit_str(&data.current_song.album, 80)).center();
+
+    let artistlabel: Align<DruidState> =
+        Label::new(|data: &DruidState, _: &_| limit_str(&data.current_song.artist, 80)).center();
 
     let progresslabel: Align<DruidState> = Label::new(|data: &DruidState, _env: &_| {
         format!(
@@ -260,14 +265,41 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_child(btn_upvote)
         .with_child(btn_downvote);
 
-    Flex::column()
+    let songpanelinner = Flex::column()
+        .with_spacer(4.0)
+        .with_child(songnamelabel)
+        .with_child(albumlabel)
+        .with_child(artistlabel)
+        .with_spacer(4.0);
+
+    let songpanelouter = Flex::row()
+        .with_spacer(4.0)
+        .with_child(songpanelinner)
+        .with_spacer(4.0)
+        .border(Color::grey(0.07), 1.0)
+        .rounded(3.0);
+
+    let songrow = Flex::row()
+        .with_flex_spacer(1.0)
+        .with_child(songpanelouter)
+        .with_flex_spacer(1.0);
+
+    let body = Flex::column()
         .with_child(row1)
         .with_child(timer1)
-        .with_child(songnamelabel)
+        .with_spacer(5.0)
+        .with_child(songrow)
+        .with_spacer(5.0)
         .with_child(progresslabel)
         .with_child(volumelabel)
         .with_child(volumeslider)
-        .with_child(songqueue)
+        .with_spacer(5.0)
+        .with_flex_child(songqueue, 1.0);
+
+    Flex::row()
+        .with_spacer(3.0)
+        .with_flex_child(body, 1.0)
+        .with_spacer(3.0)
 }
 
 fn format_songlength(seconds: u64) -> String {
@@ -378,35 +410,44 @@ struct SongData {
 
 impl SongData {
     fn fetch_random_song(data: &DruidState) -> Result<SongData> {
-        let mut result = SongData::default();
-        result.config = data.config.clone();
-
         let id = reqwest::blocking::get(&format!(
             "http://{}:{}/random_id",
-            result.config.hostname, result.config.port
+            data.config.hostname, data.config.port
         ))?
         .text()?;
 
+        let mut result = SongData {
+            config: data.config.clone(),
+            id,
+            ..Default::default()
+        };
+
+        result.fetch_songdata()?;
+
+        Ok(result)
+    }
+
+    fn fetch_songdata(&mut self) -> Result<()> {
         let songdata = reqwest::blocking::get(&format!(
             "http://{}:{}/songdata/{}",
-            result.config.hostname, result.config.port, id
+            self.config.hostname, self.config.port, self.id
         ))?
         .text()?;
         let songdata = json::parse(&songdata)?;
+
         let mut title = songdata["songname"].to_string();
         if title.is_empty() {
             title = songdata["filename"].to_string()
         };
 
-        result.id = id;
-        result.title = title;
-        result.artist = songdata["artist"].to_string();
-        result.album = songdata["album"].to_string();
-        result.playtime = songdata["length"].to_string();
-        result.rating = songdata["rating"].to_string().parse().unwrap_or_default();
-        result.skip = false;
+        self.title = title;
+        self.artist = songdata["artist"].to_string();
+        self.album = songdata["album"].to_string();
+        self.playtime = songdata["length"].to_string();
+        self.rating = songdata["rating"].to_string().parse().unwrap_or_default();
+        self.skip = false;
 
-        Ok(result)
+        Ok(())
     }
 
     fn updoot(&mut self) -> Result<()> {
@@ -417,6 +458,7 @@ impl SongData {
             ))?;
             self.updooted = true;
         }
+        self.fetch_songdata()?;
         Ok(())
     }
 
@@ -440,15 +482,18 @@ fn limit_str(data: &str, maxlength: usize) -> String {
 }
 
 fn build_song_widget() -> impl Widget<SongData> {
-    let songlabel: Align<SongData> = Label::new(|data: &SongData, _env: &_| {
-        format!(
-            "{} - {} ",
-            limit_str(&data.title, 40),
-            limit_str(&data.artist, 30)
-        )
-    })
-    .padding(5.0)
-    .center();
+    let songlabelname: Align<SongData> =
+        Label::new(|data: &SongData, _env: &_| limit_str(&data.title, 80))
+            .padding(1.0)
+            .align_left();
+    let songlabelalbum: Align<SongData> =
+        Label::new(|data: &SongData, _env: &_| limit_str(&data.album, 80))
+            .padding(1.0)
+            .align_left();
+    let songlabelartist: Align<SongData> =
+        Label::new(|data: &SongData, _env: &_| limit_str(&data.artist, 80))
+            .padding(1.0)
+            .align_left();
 
     let playtimelabel: Align<SongData> =
         Label::new(|data: &SongData, _env: &_| format!("({}) <{}>", data.playtime, data.rating))
@@ -469,13 +514,26 @@ fn build_song_widget() -> impl Widget<SongData> {
 
     let btn_downvote =
         Button::new("👎").on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| {
-            song.downdoot().unwrap_or_default()
+            song.downdoot().unwrap_or_default();
+            song.skip = true;
         });
 
+    let names = Flex::column()
+        .with_spacer(3.0)
+        .with_child(songlabelname)
+        .with_child(songlabelalbum)
+        .with_child(songlabelartist)
+        .with_spacer(3.0);
+
     Flex::row()
+        .with_spacer(3.0)
         .with_child(skip)
         .with_child(btn_upvote)
         .with_child(btn_downvote)
-        .with_child(songlabel)
-        .with_flex_child(Align::right(playtimelabel), 1.0)
+        .with_spacer(5.0)
+        .with_flex_child(Align::left(names), 1.0)
+        .with_child(Align::right(playtimelabel))
+        .border(Color::grey(0.07), 1.0)
+        .rounded(3.0)
+        .padding(1.0)
 }
