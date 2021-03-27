@@ -8,8 +8,8 @@ use serde_derive::{Deserialize, Serialize};
 
 use druid::{
     widget::{Align, Button, Flex, Label, List, Slider},
-    BoxConstraints, Color, Env, Event, EventCtx, LayoutCtx, LifeCycle, LifeCycleCtx, PaintCtx,
-    Size, TimerToken, UpdateCtx,
+    BoxConstraints, Color, Env, Event, EventCtx, FontDescriptor, FontFamily, LayoutCtx, LifeCycle,
+    LifeCycleCtx, PaintCtx, Size, TimerToken, UpdateCtx,
 };
 use druid::{AppLauncher, Data, Lens, Widget, WidgetExt, WindowDesc};
 use stable_eyre::Result;
@@ -18,8 +18,8 @@ use std::{sync::Arc, time::Instant};
 use unicode_segmentation::UnicodeSegmentation;
 
 const TIMER_INTERVAL: Duration = Duration::from_millis(100);
-const WINDOW_WIDTH: f64 = 850f64;
-const WINDOW_HEIGHT: f64 = 770f64;
+const WINDOW_WIDTH: f64 = 750f64;
+const WINDOW_HEIGHT: f64 = 810f64;
 
 #[derive(Clone, Serialize, Deserialize)]
 struct MyConfig {
@@ -226,16 +226,19 @@ fn ui_builder() -> impl Widget<DruidState> {
         fps_timer_id: TimerToken::INVALID,
     };
 
-    let songnamelabel: Align<DruidState> = Label::new(|data: &DruidState, _: &_| {
-        format!(
-            "{} <{}>",
-            limit_str(&data.current_song.title, 80),
-            &data.current_song.rating
-        )
-    })
-    .center();
+    let songnamelabel: Align<DruidState> =
+        Label::new(|data: &DruidState, _: &_| limit_str(&data.current_song.title, 80)).center();
     let albumlabel: Align<DruidState> =
         Label::new(|data: &DruidState, _: &_| limit_str(&data.current_song.album, 80)).center();
+
+    let id = Label::new(|data: &DruidState, _env: &_| data.current_song.id.to_string())
+        .with_text_color(Color::grey(0.60))
+        .with_text_size(10f64);
+
+    let rating =
+        Label::new(|data: &DruidState, _env: &_| rating_to_stars(data.current_song.rating))
+            .with_font(FontDescriptor::new(FontFamily::MONOSPACE))
+            .with_text_size(18f64);
 
     let artistlabel: Align<DruidState> =
         Label::new(|data: &DruidState, _: &_| limit_str(&data.current_song.artist, 80)).center();
@@ -259,7 +262,7 @@ fn ui_builder() -> impl Widget<DruidState> {
 
     let songqueue = List::new(build_song_widget).lens(DruidState::items);
 
-    let row1 = Flex::row()
+    let buttonrow = Flex::row()
         .with_child(btn_pauseplay)
         .with_child(btn_skip)
         .with_child(btn_upvote)
@@ -270,6 +273,8 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_child(songnamelabel)
         .with_child(albumlabel)
         .with_child(artistlabel)
+        .with_child(rating)
+        .with_child(id)
         .with_spacer(4.0);
 
     let songpanelouter = Flex::row()
@@ -285,7 +290,7 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_flex_spacer(1.0);
 
     let body = Flex::column()
-        .with_child(row1)
+        .with_child(buttonrow)
         .with_child(timer1)
         .with_spacer(5.0)
         .with_child(songrow)
@@ -481,6 +486,14 @@ fn limit_str(data: &str, maxlength: usize) -> String {
     slice.join("")
 }
 
+fn rating_to_stars(rating: u32) -> String {
+    format!(
+        "{}{}",
+        (0..rating).map(|_| "★").collect::<String>(),
+        (rating..7).map(|_| "☆").collect::<String>()
+    )
+}
+
 fn build_song_widget() -> impl Widget<SongData> {
     let songlabelname: Align<SongData> =
         Label::new(|data: &SongData, _env: &_| limit_str(&data.title, 80))
@@ -496,9 +509,17 @@ fn build_song_widget() -> impl Widget<SongData> {
             .align_left();
 
     let playtimelabel: Align<SongData> =
-        Label::new(|data: &SongData, _env: &_| format!("({}) <{}>", data.playtime, data.rating))
+        Label::new(|data: &SongData, _env: &_| format!("({})", data.playtime))
             .padding(5.0)
             .align_right();
+
+    let id = Label::new(|data: &SongData, _env: &_| data.id.to_string())
+        .with_text_color(Color::grey(0.60))
+        .with_text_size(10f64);
+
+    let rating = Label::new(|data: &SongData, _env: &_| rating_to_stars(data.rating))
+        .with_font(FontDescriptor::new(FontFamily::MONOSPACE))
+        .with_text_size(18f64);
 
     let skip = Button::new("✘")
         .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| song.skip = true);
@@ -525,11 +546,20 @@ fn build_song_widget() -> impl Widget<SongData> {
         .with_child(songlabelartist)
         .with_spacer(3.0);
 
-    Flex::row()
-        .with_spacer(3.0)
+    let controls = Flex::row()
         .with_child(skip)
         .with_child(btn_upvote)
-        .with_child(btn_downvote)
+        .with_child(btn_downvote);
+
+    let left = Flex::column()
+        .with_child(rating)
+        .with_child(controls)
+        .with_spacer(3f64)
+        .with_child(id);
+
+    Flex::row()
+        .with_spacer(3.0)
+        .with_child(left)
         .with_spacer(5.0)
         .with_flex_child(Align::left(names), 1.0)
         .with_child(Align::right(playtimelabel))
