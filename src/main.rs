@@ -141,6 +141,7 @@ struct DruidState {
     paused: bool,
     #[data(ignore)]
     config: MyConfig,
+    last_song: SongData,
 }
 
 fn main() -> Result<()> {
@@ -170,6 +171,7 @@ fn main() -> Result<()> {
         current_song: SongData::default(),
         paused: false,
         config: cfg,
+        last_song: SongData::default(),
     };
 
     println!("nach state vor fetch");
@@ -275,7 +277,7 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_child(volumeslider)
         .with_child(volume_big);
 
-    let songqueue = List::new(build_song_widget).lens(DruidState::items);
+    let songqueue = List::new(build_song_widget_with_skip).lens(DruidState::items);
 
     let buttonrow = Flex::row()
         .with_child(btn_pauseplay)
@@ -306,6 +308,7 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_flex_spacer(1.0);
 
     let body = Flex::column()
+        .with_child(build_song_widget_without_skip().lens(DruidState::last_song))
         .with_child(buttonrow)
         .with_child(timer1)
         .with_spacer(5.0)
@@ -346,7 +349,9 @@ impl DruidState {
     }
 
     fn dl_play(&mut self) -> Result<()> {
-        self.current_song = self.drop_song(0)?;
+        let a = self.drop_song(0)?;
+        self.last_song = std::mem::replace(&mut self.current_song, a);
+        self.last_song.is_last = true;
         let song = self.dl()?;
         self.play(song)?;
         self.queue_song(SongData::fetch_random_song(&self)?);
@@ -426,6 +431,9 @@ struct SongData {
     updoot_sync_marker: bool,
     #[data(ignore)]
     config: MyConfig,
+    real_song: bool,
+    is_last: bool,
+    downdooted: bool,
 }
 
 impl SongData {
@@ -439,6 +447,7 @@ impl SongData {
         let mut result = SongData {
             config: data.config.clone(),
             id,
+            real_song: true,
             ..Default::default()
         };
 
@@ -448,6 +457,9 @@ impl SongData {
     }
 
     fn fetch_songdata(&mut self) -> Result<()> {
+        if !self.real_song {
+            return Ok(());
+        }
         let songdata = reqwest::blocking::get(&format!(
             "http://{}:{}/songdata/{}",
             self.config.hostname, self.config.port, self.id
@@ -471,18 +483,59 @@ impl SongData {
     }
 
     fn updoot(&mut self) -> Result<()> {
-        if !self.updooted {
-            reqwest::blocking::get(&format!(
-                "http://{}:{}/upvote/{}",
-                self.config.hostname, self.config.port, self.id
-            ))?;
+        if !self.real_song {
+            return Ok(());
+        }
+        if self.downdooted {
+            // downdooted -> updooted
+            self.net_updoot()?;
+            self.net_updoot()?;
+            self.downdooted = false;
             self.updooted = true;
+        } else if !self.updooted {
+            // neutral -> updooted
+            self.net_updoot()?;
+            self.updooted = true;
+        } else {
+            // updooted -> neutral
+            self.net_downdoot()?;
+            self.updooted = false;
         }
         self.fetch_songdata()?;
         Ok(())
     }
 
-    fn downdoot(&self) -> Result<()> {
+    fn downdoot(&mut self) -> Result<()> {
+        if !self.real_song {
+            return Ok(());
+        }
+        if self.updooted {
+            // updooted -> downdooted
+            self.net_downdoot()?;
+            self.net_downdoot()?;
+            self.updooted = false;
+            self.downdooted = true;
+        } else if !self.downdooted {
+            // neutral -> downdooted
+            self.net_downdoot()?;
+            self.downdooted = true;
+        } else {
+            // downdooted -> neutral
+            self.net_updoot()?;
+            self.downdooted = false;
+        }
+        self.fetch_songdata()?;
+        Ok(())
+    }
+
+    fn net_updoot(&mut self) -> Result<()> {
+        reqwest::blocking::get(&format!(
+            "http://{}:{}/upvote/{}",
+            self.config.hostname, self.config.port, self.id
+        ))?;
+        Ok(())
+    }
+    fn net_downdoot(&mut self) -> Result<()> {
         reqwest::blocking::get(&format!(
             "http://{}:{}/downvote/{}",
             self.config.hostname, self.config.port, self.id
@@ -509,7 +562,15 @@ fn rating_to_emptystars(rating: u32) -> String {
     (rating..7).map(|_| "☆").collect::<String>()
 }
 
-fn build_song_widget() -> impl Widget<SongData> {
+fn build_song_widget_with_skip() -> impl Widget<SongData> {
+    build_song_widget(true)
+}
+
+fn build_song_widget_without_skip() -> impl Widget<SongData> {
+    build_song_widget(false)
+}
+
+fn build_song_widget(enable_skip: bool) -> impl Widget<SongData> {
     let songlabelname: Align<SongData> =
         Label::new(|data: &SongData, _env: &_| limit_str(&data.title, 80))
             .padding(1.0)
@@ -561,11 +622,17 @@ fn build_song_widget() -> impl Widget<SongData> {
     })
     .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| song.updoot().unwrap_or_default());
 
-    let btn_downvote =
-        Button::new("👎").on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| {
-            song.downdoot().unwrap_or_default();
-            song.skip = true;
-        });
+    let btn_downvote = Button::new(|song: &SongData, _: &Env| {
+        if !song.downdooted {
+            "👎".to_string()
+        } else {
+            "👎✓".to_string()
+        }
+    })
+    .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| {
+        song.downdoot().unwrap_or_default();
+        song.skip = true;
+    });
 
     let names = Flex::column()
         .with_spacer(3.0)
@@ -574,10 +641,14 @@ fn build_song_widget() -> impl Widget<SongData> {
         .with_child(songlabelartist)
         .with_spacer(3.0);
 
-    let controls = Flex::row()
-        .with_child(skip)
-        .with_child(btn_upvote)
-        .with_child(btn_downvote);
+    let controls = if enable_skip {
+        Flex::row()
+            .with_child(skip)
+            .with_child(btn_upvote)
+            .with_child(btn_downvote)
+    } else {
+        Flex::row().with_child(btn_upvote).with_child(btn_downvote)
+    };
 
     let left = Flex::column()
         .with_child(rating_row)
