@@ -7,7 +7,7 @@ use serde_derive::{Deserialize, Serialize};
 //"C:\Strawberry\c\bin\windres.exe"
 
 use druid::{
-    widget::{Align, Button, Flex, Label, List, Slider},
+    widget::{Align, Button, Flex, Label, List, Slider, ViewSwitcher},
     BoxConstraints, Color, Env, Event, EventCtx, FontDescriptor, FontFamily, LayoutCtx, LifeCycle,
     LifeCycleCtx, PaintCtx, Size, TimerToken, UpdateCtx,
 };
@@ -277,7 +277,7 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_child(volumeslider)
         .with_child(volume_big);
 
-    let songqueue = List::new(build_song_widget_with_skip).lens(DruidState::items);
+    let songqueue = List::new(build_song_widget).lens(DruidState::items);
 
     let buttonrow = Flex::row()
         .with_child(btn_pauseplay)
@@ -307,8 +307,16 @@ fn ui_builder() -> impl Widget<DruidState> {
         .with_child(songpanelouter)
         .with_flex_spacer(1.0);
 
+    let last_song_panel = ViewSwitcher::new(
+        |data: &DruidState, _env| data.last_song.real_song,
+        |selector, _data, _env| match selector {
+            true => Box::new(build_song_widget().lens(DruidState::last_song)),
+            false => Box::new(Flex::row()),
+        },
+    );
+
     let body = Flex::column()
-        .with_child(build_song_widget_without_skip().lens(DruidState::last_song))
+        .with_child(last_song_panel)
         .with_child(buttonrow)
         .with_child(timer1)
         .with_spacer(5.0)
@@ -562,15 +570,7 @@ fn rating_to_emptystars(rating: u32) -> String {
     (rating..7).map(|_| "☆").collect::<String>()
 }
 
-fn build_song_widget_with_skip() -> impl Widget<SongData> {
-    build_song_widget(true)
-}
-
-fn build_song_widget_without_skip() -> impl Widget<SongData> {
-    build_song_widget(false)
-}
-
-fn build_song_widget(enable_skip: bool) -> impl Widget<SongData> {
+fn build_song_widget() -> impl Widget<SongData> {
     let songlabelname: Align<SongData> =
         Label::new(|data: &SongData, _env: &_| limit_str(&data.title, 80))
             .padding(1.0)
@@ -610,8 +610,16 @@ fn build_song_widget(enable_skip: bool) -> impl Widget<SongData> {
 
     let rating_row = Flex::row().with_child(rating_full).with_child(rating_empty);
 
-    let skip = Button::new("✘")
-        .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| song.skip = true);
+    let skip_panel = ViewSwitcher::new(
+        |data: &SongData, _env| data.is_last,
+        |selector, _data, _env| match selector {
+            false => Box::new(
+                Button::new("✘")
+                    .on_click(|_: &mut EventCtx, song: &mut SongData, _: &Env| song.skip = true),
+            ),
+            true => Box::new(Flex::column()),
+        },
+    );
 
     let btn_upvote = Button::new(|song: &SongData, _: &Env| {
         if !song.updooted {
@@ -641,14 +649,10 @@ fn build_song_widget(enable_skip: bool) -> impl Widget<SongData> {
         .with_child(songlabelartist)
         .with_spacer(3.0);
 
-    let controls = if enable_skip {
-        Flex::row()
-            .with_child(skip)
-            .with_child(btn_upvote)
-            .with_child(btn_downvote)
-    } else {
-        Flex::row().with_child(btn_upvote).with_child(btn_downvote)
-    };
+    let controls = Flex::row()
+        .with_child(skip_panel)
+        .with_child(btn_upvote)
+        .with_child(btn_downvote);
 
     let left = Flex::column()
         .with_child(rating_row)
